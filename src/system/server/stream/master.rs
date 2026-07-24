@@ -5,7 +5,7 @@ use toaster_lib_rs::{
 };
 use uuid::Uuid;
 
-pub const NAME: &str = "MASTER";
+pub const NAME: &str = "master";
 
 pub enum Income {
     Judge {
@@ -66,13 +66,13 @@ impl super::Outgo for Outgo {
         match self {
             Self::FullResult { id, verdict, tests } => {
                 let mut body = RawMessage::new("VERDICT");
-                body.add_field(&"SUBMISSION", &id);
+                body.add_field(&"ID", &id);
                 match verdict {
                     submission::Result::Ok {
                         score,
                         groups_score,
                     } => {
-                        body.add_fields(vec![(&"VERDICT", &"OK"), (&"SUM", &score)]);
+                        body.add_fields(vec![(&"NAME", &"OK"), (&"SUM", &score)]);
                         body.add_field(
                             &"GROUPS",
                             &groups_score
@@ -83,11 +83,11 @@ impl super::Outgo for Outgo {
                         );
                     }
                     submission::Result::Ce(msg) => {
-                        body.add_field(&"VERDICT", &"CE");
+                        body.add_field(&"NAME", &"CE");
                         body.add_field(&"MESSAGE", &msg);
                     }
                     submission::Result::Te(msg) => {
-                        body.add_field(&"VERDICT", &"TE");
+                        body.add_field(&"NAME", &"TE");
                         body.add_field(&"MESSAGE", &msg);
                     }
                 }
@@ -116,7 +116,7 @@ impl super::Outgo for Outgo {
             } => {
                 let mut body = RawMessage::new("TEST");
                 body.add_fields(vec![
-                    (&"SUBMISSION", &id),
+                    (&"ID", &id),
                     (&"TEST", &test_id),
                     (&"VERDICT", &verdict),
                 ])
