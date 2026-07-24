@@ -43,7 +43,7 @@ async fn main() -> Result<()> {
     let system_channel = Arc::new(
         Channel::bind(
             system_socket_address,
-            Uri::from_str(format!("ws://{}", system_socket_address).as_str())?,
+            Uri::from_str(format!("ws://{}/api/ws/setup", system_socket_address).as_str())?,
         )
         .await
         .context("binding system channel")?,
