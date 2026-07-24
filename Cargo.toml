@@ -7,3 +7,20 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+tokio = {version = "*", features = ["full"]}
+toaster_lib_rs = { git = "https://github.com/summer-54/toaster_lib_rs.git" }
+uuid = "*"
+http = "*"
+anyhow = "*"
+log = "*"
+env_logger = "*"
+ratchet_rs = { version = "*", features = ["split"] }
+ratchet_deflate = { version = "*" }
+
+reqwest = "*"
+
+colored = "*"
+
+rand = "*"
+
+bytes = "*"
