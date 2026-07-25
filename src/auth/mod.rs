@@ -1,3 +1,4 @@
+pub mod mock;
 pub mod system_api;
 use toaster_lib_rs::auth::Cert;
 

@@ -40,16 +40,29 @@ async fn main() -> Result<()> {
     log::info!("starting with");
 
     let isr = invoker::server::websocket::ChannelReceiver::new(invoker_gate_socket_address).await?;
-    let system_channel = Arc::new(
-        Channel::bind(
-            system_socket_address,
-            Uri::from_str(format!("ws://{}/api/ws/setup", system_socket_address).as_str())?,
-        )
-        .await
-        .context("binding system channel")?,
-    );
+    // let system_channel = Arc::new(
+    //     Channel::bind(
+    //         system_socket_address,
+    //         Uri::from_str(format!("ws://{}/api/ws/setup", system_socket_address).as_str())?,
+    //     )
+    //     .await
+    //     .context("binding system channel")?,
+    // );
 
-    let system_master_stream = system_channel.new_stream(system::MASTER_NAME).await;
+    // let system_master_stream = system_channel.new_stream(system::MASTER_NAME).await;
+
+    // let app = Arc::new(App {
+    //     invokers_service: Arc::new(invoker::Service::default()),
+    //     auth_service: Arc::new(auth::system_api::Service {
+    //         api_url: auth_api_url,
+    //     }),
+    // });
+
+    let sms_logger = |msg| {
+        log::trace!("sending msg into system master stream: {msg:?}");
+    };
+
+    let system_master_stream = toaster_lib_rs::server::mock::Mock::new(sms_logger);
 
     let app = Arc::new(App {
         invokers_service: Arc::new(invoker::Service::default()),

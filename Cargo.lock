@@ -483,9 +483,9 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "either"
-version = "1.16.0"
+version = "1.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91622ff5e7162018101f2fea40d6ebf4a78bbe5a49736a2020649edf9693679e"
+checksum = "9e5e8f6c15a24b9a3ee5efec809ccd006d3b30e8b3bb63c39af737c7f87daa1d"
 
 [[package]]
 name = "ena"
@@ -1020,6 +1020,7 @@ dependencies = [
  "bytes",
  "colored",
  "env_logger",
+ "futures",
  "http",
  "log",
  "rand 0.10.2",
@@ -2336,12 +2337,13 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 [[package]]
 name = "toaster_lib_rs"
 version = "0.1.0"
-source = "git+https://github.com/summer-54/toaster_lib_rs.git#40de19b914258a5860321465af55b6acfd2823c1"
+source = "git+https://github.com/summer-54/toaster_lib_rs.git#88bd7e7a5de573235620eed94d761122799aec8a"
 dependencies = [
  "anyhow",
  "bytes",
  "bytesize",
  "colored",
+ "futures",
  "http",
  "log",
  "rand 0.10.2",

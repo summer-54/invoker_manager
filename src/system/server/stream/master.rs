@@ -1,6 +1,7 @@
 use crate::prelude::*;
 use toaster_lib_rs::{
     judge::{Lang, submission, test},
+    logger::short_slice,
     server::RawMessage,
 };
 use uuid::Uuid;
@@ -59,6 +60,31 @@ pub enum Outgo {
         verdict: test::Verdict,
         data: Box<[u8]>,
     },
+}
+
+impl std::fmt::Debug for Outgo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::FullResult { id, verdict, tests } => f
+                .debug_struct("FullResult")
+                .field("id", id)
+                .field("verdict", verdict)
+                .field("tests", tests)
+                .finish(),
+            Self::TestResult {
+                id,
+                test_id,
+                verdict,
+                data,
+            } => f
+                .debug_struct("TestVerdict")
+                .field("id", id)
+                .field("test_id", test_id)
+                .field("verdict", verdict)
+                .field("data", &Box::<[u8]>::from(short_slice(data)))
+                .finish(),
+        }
+    }
 }
 
 impl super::Outgo for Outgo {
