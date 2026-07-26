@@ -68,7 +68,7 @@ impl ChannelReceiver {
                     break (write, read, address);
                 }
                 Err(e) => {
-                    log::error!("({log_state}) {e}");
+                    log::error!("({log_state}) {e:?}");
                 }
             }
         };
@@ -96,6 +96,7 @@ impl InvokersStreamsReceiver for Arc<ChannelReceiver> {
             let auth_stream = channel.new_stream(stream::AUTH_NAME).await;
             let master_stream = channel.new_stream(stream::MASTER_NAME).await;
             let judge_stream = channel.new_stream(stream::JUDGE_NAME).await;
+            tokio::spawn(channel.run());
             Ok((auth_stream, master_stream, judge_stream, id))
         }
     }

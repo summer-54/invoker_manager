@@ -36,14 +36,47 @@ impl<JS: Stream<invoker::JudgeIncome, invoker::JudgeOutgo>, AService: auth::Serv
         let invoker = self
             .clone()
             .invokers_service
-            .create_invoker(auth_stream, &master_stream, judge_stream, id)
+            .create_invoker(auth_stream, &master_stream, judge_stream, id.clone())
             .await?;
+        let token = invoker.token();
+
         let cert = self
             .auth_service
             .clone()
             .certificate(invoker.cert_name.clone())
             .await?;
         self.invokers_service.verify_invoker(invoker, cert).await?;
+
+        loop {
+            match master_stream
+                .recv()
+                .await
+                .context(format!("recv master stream invoker {token} message"))?
+                .context(format!("recv master stream invoker {token} message"))
+            {
+                Ok(toaster_lib_rs::server::stream::master::InvokerToManager::Token {
+                    token: new_token,
+                    ..
+                }) => {
+                    log::warn!("invoker {token} repeat Token message: {new_token}");
+                }
+                Ok(toaster_lib_rs::server::stream::master::InvokerToManager::Exited {
+                    code,
+                    ..
+                }) => {
+                    log::trace!("invoker {token} exited: with code: {code}");
+                    break;
+                }
+                Err(e) => {
+                    log::error!("{e:?}");
+                    break;
+                }
+            }
+        }
+
+        log::info!("delete invoker '{token}'");
+
+        self.clone().invokers_service.delete_invoker(&token).await;
 
         Ok(())
     }
@@ -78,7 +111,7 @@ impl<
                         .await
                         .context("handling invoker {id}")
                         .map_err(|err| {
-                            log::error!("{err}");
+                            log::error!("{err:?}");
                         });
                 });
             }
@@ -87,7 +120,12 @@ impl<
         let system = tokio::spawn(async move {
             let sms = Arc::new(system_master_stream);
             loop {
-                match sms.recv().await? {
+                match sms
+                    .recv()
+                    .await
+                    .context(format!("recv master system message"))?
+                    .context("recv master system message")?
+                {
                     system::MasterIncome::Judge {
                         id,
                         test_count,
@@ -110,8 +148,8 @@ impl<
                                         data: payload.data,
                                     })
                                     .await
-                                    .context("sending test result")
-                                    .map_err(|e| log::error!("({log_state}) {e}"));
+                                    .context("sending judge result")
+                                    .map_err(|e| log::error!("({log_state}) {e:?}"));
                             }
                             sms_clone
                         });

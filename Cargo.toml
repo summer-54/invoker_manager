@@ -25,3 +25,7 @@ rand = "*"
 
 bytes = "*"
 futures = "*"
+
+[features]
+default = []
+mock = []
