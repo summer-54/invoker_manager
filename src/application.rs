@@ -1,6 +1,10 @@
 use std::sync::Arc;
 
-use crate::{auth, invoker, prelude::*};
+use crate::{
+    auth,
+    invoker::{self, InvokerComponents},
+    prelude::*,
+};
 
 use toaster_lib_rs::{
     auth::{CertName, Token},
@@ -16,7 +20,7 @@ pub trait InvokersStreamsReceiver {
     #[allow(clippy::type_complexity)]
     fn next(
         &self,
-    ) -> impl std::future::Future<Output = Result<(Self::AS, Self::MS, Self::JS, Token, CertName)>>
+    ) -> impl std::future::Future<Output = Result<InvokerComponents<Self::AS, Self::MS, Self::JS>>>
     + Send
     + Sync
     + 'static;
@@ -101,8 +105,13 @@ impl<
         let this = self.clone();
         let invokers = tokio::spawn(async move {
             loop {
-                let (auth_stream, master_stream, judge_stream, token, cert_name) =
-                    invoker_stream_receiver.next().await?;
+                let InvokerComponents {
+                    auth_stream,
+                    master_stream,
+                    judge_stream,
+                    token,
+                    cert_name,
+                } = invoker_stream_receiver.next().await?;
                 let this = this.clone();
                 tokio::spawn(async move {
                     let _ = this
@@ -122,7 +131,7 @@ impl<
                 match sms
                     .recv()
                     .await
-                    .context(format!("recv master system message"))?
+                    .context("recv master system message".to_string())?
                     .context("recv master system message")?
                 {
                     testing_system::SystemToManager::Judge {
@@ -162,7 +171,7 @@ impl<
                         system_master_stream
                             .send(testing_system::ManagerToSystem::SubmissionResult {
                                 submission_id: submission_id.clone(),
-                                result: result,
+                                result,
                             })
                             .await?
                     }

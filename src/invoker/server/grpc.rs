@@ -3,7 +3,7 @@ use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::{Response, Status, codec::CompressionEncoding, metadata::MetadataMap};
 
-use crate::{application::InvokersStreamsReceiver, prelude::*};
+use crate::{application::InvokersStreamsReceiver, invoker::InvokerComponents, prelude::*};
 
 use tokio::{
     sync::{
@@ -22,9 +22,31 @@ type AS = grpc::ServerStream<pb::AuthIncome, pb::AuthOutgo, tonic::Streaming<pb:
 type MS = grpc::ServerStream<pb::MasterIncome, pb::MasterOutgo, tonic::Streaming<pb::MasterIncome>>;
 type JS = grpc::ServerStream<pb::JudgeIncome, pb::JudgeOutgo, tonic::Streaming<pb::JudgeIncome>>;
 
+struct InvokerBuilder {
+    auth_stream: Option<AS>,
+    master_stream: Option<MS>,
+    judge_stream: Option<JS>,
+    cert_name: CertName,
+}
+
+impl InvokerBuilder {
+    pub fn new(cert_name: CertName) -> Self {
+        Self {
+            auth_stream: None,
+            master_stream: None,
+            judge_stream: None,
+            cert_name,
+        }
+    }
+
+    pub fn is_ready(&self) -> bool {
+        self.auth_stream.is_some() && self.master_stream.is_some() && self.judge_stream.is_some()
+    }
+}
+
 pub struct Server {
-    pub map: Mutex<HashMap<Token, (Option<AS>, Option<MS>, Option<JS>, CertName)>>,
-    pub sender: UnboundedSender<(AS, MS, JS, Token, CertName)>,
+    map: Mutex<HashMap<Token, InvokerBuilder>>,
+    pub sender: UnboundedSender<InvokerComponents<AS, MS, JS>>,
 }
 
 type ServiceStream<T> = UnboundedReceiverStream<Result<T, Status>>;
@@ -32,18 +54,30 @@ type ServiceStream<T> = UnboundedReceiverStream<Result<T, Status>>;
 impl Server {
     pub async fn check(&self, token: &Token) -> Result<()> {
         let mut map = self.map.lock().await;
-        if !matches!(map.get(token), Some((Some(_), Some(_), Some(_), ..))) {
+        if !matches!(map.get(token), Some(ib) if ib.is_ready()) {
             return Ok(());
         }
 
-        let Some((token, (Some(auth_stream), Some(master_stream), Some(judge_stream), cert_name))) =
-            map.remove_entry(token)
+        let Some((
+            token,
+            InvokerBuilder {
+                auth_stream: Some(auth_stream),
+                master_stream: Some(master_stream),
+                judge_stream: Some(judge_stream),
+                cert_name,
+            },
+        )) = map.remove_entry(token)
         else {
             unreachable!()
         };
 
-        self.sender
-            .send((auth_stream, master_stream, judge_stream, token, cert_name))?;
+        self.sender.send(InvokerComponents {
+            auth_stream,
+            master_stream,
+            judge_stream,
+            token,
+            cert_name,
+        })?;
         Ok(())
     }
 }
@@ -87,8 +121,8 @@ impl grpc::invoker_manager::Service for Server {
                 .lock()
                 .await
                 .entry(token.clone())
-                .or_insert((None, None, None, cert_name))
-                .1 = Some(stream);
+                .or_insert(InvokerBuilder::new(cert_name))
+                .master_stream = Some(stream);
         }
 
         self.check(&token)
@@ -123,8 +157,8 @@ impl grpc::invoker_manager::Service for Server {
                 .lock()
                 .await
                 .entry(token.clone())
-                .or_insert((None, None, None, cert_name))
-                .2 = Some(stream);
+                .or_insert(InvokerBuilder::new(cert_name))
+                .judge_stream = Some(stream);
         }
 
         self.check(&token)
@@ -158,8 +192,8 @@ impl grpc::invoker_manager::Service for Server {
                 .lock()
                 .await
                 .entry(token.clone())
-                .or_insert((None, None, None, cert_name))
-                .0 = Some(stream);
+                .or_insert(InvokerBuilder::new(cert_name))
+                .auth_stream = Some(stream);
         }
 
         self.check(&token)
@@ -171,7 +205,7 @@ impl grpc::invoker_manager::Service for Server {
 }
 
 pub struct ChannelReceiver {
-    receiver: Mutex<UnboundedReceiver<(AS, MS, JS, Token, CertName)>>,
+    receiver: Mutex<UnboundedReceiver<InvokerComponents<AS, MS, JS>>>,
     #[allow(unused)]
     server_handler: JoinHandle<Result<()>>,
 }
@@ -214,7 +248,7 @@ impl InvokersStreamsReceiver for Arc<ChannelReceiver> {
 
     fn next(
         &self,
-    ) -> impl std::future::Future<Output = Result<(Self::AS, Self::MS, Self::JS, Token, CertName)>>
+    ) -> impl std::future::Future<Output = Result<InvokerComponents<Self::AS, Self::MS, Self::JS>>>
     + Send
     + Sync
     + 'static {

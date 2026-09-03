@@ -23,6 +23,19 @@ use toaster_lib_rs::{
     server::stream::Stream,
 };
 
+pub struct InvokerComponents<AS, MS, JS>
+where
+    AS: Stream<AuthIncome, AuthOutgo>,
+    JS: Stream<JudgeIncome, JudgeOutgo>,
+    MS: Stream<MasterIncome, MasterOutgo>,
+{
+    pub auth_stream: AS,
+    pub master_stream: MS,
+    pub judge_stream: JS,
+    pub cert_name: CertName,
+    pub token: Token,
+}
+
 struct InvokerGuard<JS: Stream<JudgeIncome, JudgeOutgo> + Send + Sync + 'static> {
     service: Arc<Service<JS>>,
     invoker: Arc<Invoker<JS>>,
