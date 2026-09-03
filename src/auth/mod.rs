@@ -1,6 +1,7 @@
+#[cfg(feature = "mock")]
 pub mod mock;
 pub mod system_api;
-use toaster_lib_rs::auth::Cert;
+use toaster_lib_rs::auth::{Cert, CertName};
 
 use crate::prelude::*;
 use std::sync::Arc;
@@ -8,6 +9,6 @@ use std::sync::Arc;
 pub trait Service: Send + Sync + 'static {
     fn certificate(
         self: Arc<Self>,
-        cert_name: Arc<str>,
+        cert_name: CertName,
     ) -> impl std::future::Future<Output = Result<Cert>> + Send;
 }

@@ -75,10 +75,15 @@ DATA
 ```plaintext
 master
 TYPE VERDICT
-ID <id>
-NAME OK
-SUM <uint: score>
-GROUPS <uint: score group 0> <uint: score group 1> ... <uint: score group n>
+SUBMISSION cc67b6ff-471b-b262-b6de-42d4c8e2fab1
+VERDICT OK
+SUM 90
+GROUPS 50 20 20 0
+DATA
+OK 0.1 54
+OK 0.4 54
+OK 0.9 54
+TL 1.0 54
 ```
 
 ##### Full Verdict — Compile Error

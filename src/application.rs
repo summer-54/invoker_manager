@@ -1,8 +1,13 @@
 use std::sync::Arc;
 
-use crate::{auth, invoker, prelude::*, system};
+use crate::{auth, invoker, prelude::*};
 
-use toaster_lib_rs::{judge::test, logger::LogState, server::stream::Stream};
+use toaster_lib_rs::{
+    auth::{CertName, Token},
+    judge::test,
+    logger::LogState,
+    server::stream::{Stream, testing_system},
+};
 
 pub trait InvokersStreamsReceiver {
     type AS: Stream<invoker::AuthIncome, invoker::AuthOutgo>;
@@ -11,7 +16,7 @@ pub trait InvokersStreamsReceiver {
     #[allow(clippy::type_complexity)]
     fn next(
         &self,
-    ) -> impl std::future::Future<Output = Result<(Self::AS, Self::MS, Self::JS, Box<str>)>>
+    ) -> impl std::future::Future<Output = Result<(Self::AS, Self::MS, Self::JS, Token, CertName)>>
     + Send
     + Sync
     + 'static;
@@ -31,14 +36,14 @@ impl<JS: Stream<invoker::JudgeIncome, invoker::JudgeOutgo>, AService: auth::Serv
         auth_stream: AS,
         master_stream: MS,
         judge_stream: JS,
-        id: Arc<str>,
+        cert_name: CertName,
+        token: Token,
     ) -> Result<()> {
         let invoker = self
             .clone()
             .invokers_service
-            .create_invoker(auth_stream, &master_stream, judge_stream, id.clone())
+            .create_invoker(auth_stream, judge_stream, cert_name.clone(), token.clone())
             .await?;
-        let token = invoker.token();
 
         let cert = self
             .auth_service
@@ -47,34 +52,26 @@ impl<JS: Stream<invoker::JudgeIncome, invoker::JudgeOutgo>, AService: auth::Serv
             .await?;
         self.invokers_service.verify_invoker(invoker, cert).await?;
 
-        loop {
-            match master_stream
-                .recv()
-                .await
-                .context(format!("recv master stream invoker {token} message"))?
-                .context(format!("recv master stream invoker {token} message"))
-            {
-                Ok(toaster_lib_rs::server::stream::master::InvokerToManager::Token {
-                    token: new_token,
-                    ..
-                }) => {
-                    log::warn!("invoker {token} repeat Token message: {new_token}");
-                }
-                Ok(toaster_lib_rs::server::stream::master::InvokerToManager::Exited {
+        match master_stream
+            .recv()
+            .await
+            .context(format!("recv master stream invoker {token:?} message"))?
+            .context(format!("recv master stream invoker {token:?} message"))
+        {
+            Ok(
+                toaster_lib_rs::server::stream::invoker_manager::master::InvokerToManager::Exited {
                     code,
                     ..
-                }) => {
-                    log::trace!("invoker {token} exited: with code: {code}");
-                    break;
-                }
-                Err(e) => {
-                    log::error!("{e:?}");
-                    break;
-                }
+                },
+            ) => {
+                log::trace!("invoker {token:?} exited: with code: {code}");
+            }
+            Err(e) => {
+                log::error!("{e:?}");
             }
         }
 
-        log::info!("delete invoker '{token}'");
+        log::info!("delete invoker '{token:?}'");
 
         self.clone().invokers_service.delete_invoker(&token).await;
 
@@ -88,7 +85,10 @@ impl<
 {
     pub async fn run<
         ISR: InvokersStreamsReceiver<JS = JS> + Send + 'static,
-        SMS: Stream<system::MasterIncome, system::MasterOutgo> + Send + 'static + Sync,
+        SMS: Stream<testing_system::SystemToManager, testing_system::ManagerToSystem>
+            + Send
+            + 'static
+            + Sync,
     >(
         self: Arc<Self>,
         invoker_stream_receiver: ISR,
@@ -101,13 +101,12 @@ impl<
         let this = self.clone();
         let invokers = tokio::spawn(async move {
             loop {
-                let (auth_stream, master_stream, judge_stream, id) =
+                let (auth_stream, master_stream, judge_stream, token, cert_name) =
                     invoker_stream_receiver.next().await?;
-                let id = Arc::from(id);
                 let this = this.clone();
                 tokio::spawn(async move {
                     let _ = this
-                        .handle_invoker(auth_stream, master_stream, judge_stream, id)
+                        .handle_invoker(auth_stream, master_stream, judge_stream, cert_name, token)
                         .await
                         .context("handling invoker {id}")
                         .map_err(|err| {
@@ -126,8 +125,8 @@ impl<
                     .context(format!("recv master system message"))?
                     .context("recv master system message")?
                 {
-                    system::MasterIncome::Judge {
-                        id,
+                    testing_system::SystemToManager::Judge {
+                        submission_id,
                         test_count,
                         lang,
                         data,
@@ -136,15 +135,16 @@ impl<
                             tokio::sync::mpsc::unbounded_channel::<test::ResultPayload>();
 
                         let sms_clone = sms.clone();
+                        let submission_id_clone = submission_id.clone();
                         let handler = tokio::spawn(async move {
                             while let Some(payload) = receiver.recv().await {
-                                let log_state =
-                                    LogState::new().push("id", id).push("test_id", payload.id);
+                                let log_state = LogState::new()
+                                    .push("submission id", format!("{submission_id_clone:?}"))
+                                    .push("test_id", payload.id);
                                 let _ = sms_clone
-                                    .send(system::MasterOutgo::TestResult {
-                                        id,
+                                    .send(testing_system::ManagerToSystem::TestData {
+                                        submission_id: submission_id_clone.clone(),
                                         test_id: payload.id,
-                                        verdict: payload.result.verdict,
                                         data: payload.data,
                                     })
                                     .await
@@ -160,10 +160,9 @@ impl<
                             .await?;
                         let system_master_stream = handler.await?;
                         system_master_stream
-                            .send(system::MasterOutgo::FullResult {
-                                id,
-                                verdict: result.result,
-                                tests: result.tests,
+                            .send(testing_system::ManagerToSystem::SubmissionResult {
+                                submission_id: submission_id.clone(),
+                                result: result,
                             })
                             .await?
                     }

@@ -8,14 +8,13 @@ edition = "2024"
 
 [dependencies]
 tokio = {version = "*", features = ["full"]}
+tokio-stream = "*"
 toaster_lib_rs = { git = "https://github.com/summer-54/toaster_lib_rs.git" }
 uuid = "*"
 http = "*"
 anyhow = "*"
 log = "*"
 env_logger = "*"
-ratchet_rs = { version = "*", features = ["split"] }
-ratchet_deflate = { version = "*" }
 
 reqwest = "*"
 
@@ -25,6 +24,8 @@ rand = "*"
 
 bytes = "*"
 futures = "*"
+
+tonic = {version = "*", features = ["zstd"]}
 
 [features]
 default = []

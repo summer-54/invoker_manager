@@ -1,19 +1,15 @@
-mod api;
 mod application;
 mod auth;
 mod invoker;
 mod prelude;
-mod system;
 
-use std::{env, str::FromStr, sync::Arc};
+use std::{env, sync::Arc};
 
-use http::Uri;
 use prelude::*;
-use toaster_lib_rs::server::{stream::Stream, websocket::Channel};
 
 use std::net::SocketAddrV4;
 
-use crate::application::{App, InvokersStreamsReceiver};
+use crate::application::App;
 
 const INVOKER_GATE_SOCKET_ADDRESS_ENV: &str = "INVOKER_GATE_SOCKET_ADDRESS";
 const SYSTEM_SOCKET_ADDRESS_ENV: &str = "SYSTEM_SOCKET_ADDRESS";
@@ -38,29 +34,36 @@ async fn main() -> Result<()> {
 
     log::info!("starting with");
 
-    let isr = invoker::server::websocket::ChannelReceiver::new(invoker_gate_socket_address).await?;
+    let isr =
+        invoker::server::grpc::ChannelReceiver::new(invoker_gate_socket_address.into()).await?;
     #[cfg(not(feature = "mock"))]
-    let (system_master_stream, auth_service) = {
-        let system_channel = Arc::new(
-            Channel::bind(
-                system_socket_address,
-                Uri::from_str(format!("ws://{}/api/ws/setup", system_socket_address).as_str())?,
-            )
-            .await
-            .context("binding system channel")?,
-        );
+    let (system_stream, auth_service) = {
+        use toaster_lib_rs::server::grpc::{self, ClientStream};
+        use tonic::{codec::CompressionEncoding, transport::Channel};
 
-        let system_master_stream = system_channel.new_stream(system::MASTER_NAME).await;
+        let channel = Channel::builder(
+            format!("ws://{}/api/setup", system_socket_address)
+                .parse()
+                .context("parsing manager host field")?,
+        )
+        .connect()
+        .await?;
 
+        let mut client = grpc::testing_system::Client::new(channel)
+            .accept_compressed(CompressionEncoding::Zstd)
+            .send_compressed(CompressionEncoding::Zstd)
+            .max_decoding_message_size(1024 * 1024 * 1024)
+            .max_encoding_message_size(1024 * 1024 * 1024);
+        let stream = ClientStream::from_fn(async |req| client.stream(req).await).await?;
         (
-            system_master_stream,
+            stream,
             auth::system_api::Service {
                 api_url: auth_api_url,
             },
         )
     };
     #[cfg(feature = "mock")]
-    let (system_master_stream, auth_service) = {
+    let (system_stream, auth_service) = {
         let sms_logger = |msg| {
             log::trace!("sending msg into system master stream: {msg:?}");
         };
@@ -73,7 +76,7 @@ async fn main() -> Result<()> {
         auth_service: Arc::new(auth_service),
     });
 
-    app.run(Arc::new(isr), system_master_stream)
+    app.run(Arc::new(isr), system_stream)
         .await
         .context("app run")?;
 

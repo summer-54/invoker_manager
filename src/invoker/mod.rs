@@ -1,11 +1,10 @@
 pub mod server;
 
-use crate::{api::SubmissionResult, prelude::*};
+use crate::prelude::*;
 
 use std::{collections::HashMap, ops::Deref, sync::Arc};
 
 use tokio::sync::{Mutex, mpsc::UnboundedSender};
-use uuid::Uuid;
 
 const CHALLENGE_SIZE: usize = 128;
 
@@ -13,8 +12,12 @@ pub use server::stream::{
     AuthIncome, AuthOutgo, JudgeIncome, JudgeOutgo, MasterIncome, MasterOutgo,
 };
 use toaster_lib_rs::{
-    auth::{Cert, Challenge, policy},
-    judge::{Lang, submission, test},
+    auth::{Cert, CertName, Challenge, Token, policy},
+    judge::{
+        Lang,
+        submission::{self, FullResult},
+        test,
+    },
     logger::LogState,
     poll::ResourcePool,
     server::stream::Stream,
@@ -23,7 +26,7 @@ use toaster_lib_rs::{
 struct InvokerGuard<JS: Stream<JudgeIncome, JudgeOutgo> + Send + Sync + 'static> {
     service: Arc<Service<JS>>,
     invoker: Arc<Invoker<JS>>,
-    token: Uuid,
+    token: Token,
 }
 
 impl<JS: Stream<JudgeIncome, JudgeOutgo> + Send + Sync + 'static> Deref for InvokerGuard<JS> {
@@ -37,17 +40,17 @@ impl<JS: Stream<JudgeIncome, JudgeOutgo> + Send + Sync + 'static> Deref for Invo
 impl<JS: Stream<JudgeIncome, JudgeOutgo> + Send + Sync + 'static> Drop for InvokerGuard<JS> {
     fn drop(&mut self) {
         let service = self.service.clone();
-        let uuid = self.token;
+        let token = self.token.clone();
         tokio::spawn(async move {
-            service.poll.put(uuid);
-            log::trace!("invoker {uuid} returned to pool");
+            service.poll.put(token.clone());
+            log::trace!("invoker {token:?} returned to pool");
         });
     }
 }
 
 pub struct Service<JS: Stream<JudgeIncome, JudgeOutgo>> {
-    invokers: Mutex<HashMap<Uuid, Arc<Invoker<JS>>>>,
-    pub(self) poll: ResourcePool<Uuid>,
+    invokers: Mutex<HashMap<Token, Arc<Invoker<JS>>>>,
+    pub(self) poll: ResourcePool<Token>,
 }
 
 impl<JS: Stream<JudgeIncome, JudgeOutgo>> Default for Service<JS> {
@@ -60,19 +63,16 @@ impl<JS: Stream<JudgeIncome, JudgeOutgo>> Default for Service<JS> {
 }
 
 impl<JS: Stream<JudgeIncome, JudgeOutgo>> Service<JS> {
-    pub async fn create_invoker<
-        AS: Stream<AuthIncome, AuthOutgo>,
-        MS: Stream<MasterIncome, MasterOutgo>,
-    >(
+    pub async fn create_invoker<AS: Stream<AuthIncome, AuthOutgo>>(
         &self,
         auth_stream: AS,
-        master_stream: &MS,
         judge_stream: JS,
-        id: Arc<str>,
+        cert_name: CertName,
+        token: Token,
     ) -> Result<UnverifiedInvoker<AS, JS>> {
-        UnverifiedInvoker::new(auth_stream, master_stream, judge_stream, id.clone())
+        UnverifiedInvoker::new(auth_stream, judge_stream, cert_name.clone(), token.clone())
             .await
-            .context(format!("creating invoker {id}"))
+            .context(format!("creating invoker {cert_name:?}:{token:?}"))
     }
 
     pub async fn verify_invoker(
@@ -81,20 +81,20 @@ impl<JS: Stream<JudgeIncome, JudgeOutgo>> Service<JS> {
         cert: Cert,
     ) -> Result<()> {
         let invoker = invoker.verify(cert).await?;
-        let id = invoker.token;
+        let token = invoker.token.clone();
         self.invokers
             .lock()
             .await
-            .insert(invoker.token, Arc::new(invoker));
-        self.poll.put(id);
+            .insert(token.clone(), Arc::new(invoker));
+        self.poll.put(token);
         Ok(())
     }
 
-    pub async fn delete_invoker(&self, token: &Uuid) {
+    pub async fn delete_invoker(&self, token: &Token) {
         self.invokers.lock().await.remove(token);
     }
 
-    pub async fn check_invoker(&self, token: &Uuid) -> bool {
+    pub async fn check_invoker(&self, token: &Token) -> bool {
         self.invokers.lock().await.contains_key(token)
     }
 }
@@ -120,7 +120,7 @@ impl<JS: Stream<JudgeIncome, JudgeOutgo> + Send + Sync + 'static> Service<JS> {
         lang: Lang,
         submission: Box<[u8]>,
         sender: UnboundedSender<test::ResultPayload>,
-    ) -> Result<SubmissionResult> {
+    ) -> Result<FullResult> {
         let invoker = self.take_invoker().await;
         invoker
             .judge_submission(test_count, lang, submission, sender)
@@ -131,7 +131,7 @@ impl<JS: Stream<JudgeIncome, JudgeOutgo> + Send + Sync + 'static> Service<JS> {
 
 pub struct Invoker<JS: Stream<JudgeIncome, JudgeOutgo>> {
     judge_stream: JS,
-    pub token: Uuid,
+    pub token: Token,
 }
 
 impl<JS: Stream<JudgeIncome, JudgeOutgo>> Invoker<JS> {
@@ -141,8 +141,8 @@ impl<JS: Stream<JudgeIncome, JudgeOutgo>> Invoker<JS> {
         lang: Lang,
         submission: Box<[u8]>,
         sender: UnboundedSender<test::ResultPayload>,
-    ) -> Result<SubmissionResult> {
-        let log_state = LogState::new().push("invoker", self.token);
+    ) -> Result<FullResult> {
+        let log_state = LogState::new().push("invoker", self.token.to_string());
         log::trace!("({log_state}) start testing on invoker");
         self.judge_stream
             .send(JudgeOutgo::Run {
@@ -150,7 +150,7 @@ impl<JS: Stream<JudgeIncome, JudgeOutgo>> Invoker<JS> {
                 data: submission,
             })
             .await?;
-        let mut verdicts = vec![None; test_count].into_boxed_slice();
+        let mut results = vec![None; test_count].into_boxed_slice();
 
         let submission_result = loop {
             match match self
@@ -166,30 +166,35 @@ impl<JS: Stream<JudgeIncome, JudgeOutgo>> Invoker<JS> {
                     continue;
                 }
             } {
-                JudgeIncome::FullResult(result) => {
+                JudgeIncome::SubmissionResult(result) => {
                     break result;
                 }
-                JudgeIncome::TestResult(payload) => {
-                    verdicts[payload.id] = Some(payload.result.clone());
+                JudgeIncome::TestResultPayload(payload) => {
+                    results[payload.id] = Some(payload.result.clone());
                     sender
                         .send(payload)
                         .context("internal mspc channel sending test payload")?;
                 }
-                JudgeIncome::Error { msg } => {
+                JudgeIncome::Error(msg) => {
                     log::error!("({log_state}) error: judging: {msg:?}");
-                    break submission::Result::Te(msg);
-                }
-                JudgeIncome::OpError { msg } => {
-                    log::error!("({log_state}) op_error: judging: {msg:?}");
-                    break submission::Result::Te(msg);
+                    break submission::Result::Te(msg.into_inner());
                 }
             }
         };
         log::trace!("({log_state}) testing end on invoker");
 
-        Ok(SubmissionResult {
-            result: submission_result,
-            tests: verdicts,
+        Ok(match submission_result {
+            submission::ResultWrapper::Ok {
+                score,
+                group_scores,
+                ..
+            } => FullResult::Ok {
+                score,
+                group_scores,
+                value: results,
+            },
+            submission::ResultWrapper::Ce(msg) => FullResult::Ce(msg),
+            submission::ResultWrapper::Te(msg) => FullResult::Te(msg),
         })
     }
 }
@@ -197,50 +202,40 @@ impl<JS: Stream<JudgeIncome, JudgeOutgo>> Invoker<JS> {
 pub struct UnverifiedInvoker<AS: Stream<AuthIncome, AuthOutgo>, JS: Stream<JudgeIncome, JudgeOutgo>>
 {
     invoker: Invoker<JS>,
-    pub cert_name: Arc<str>,
+    pub cert_name: CertName,
     pub auth_stream: AS,
 }
 
 impl<AS: Stream<AuthIncome, AuthOutgo>, JS: Stream<JudgeIncome, JudgeOutgo>>
     UnverifiedInvoker<AS, JS>
 {
-    pub async fn new<MS: Stream<MasterIncome, MasterOutgo>>(
+    pub async fn new(
         auth_stream: AS,
-        master_stream: &MS,
         judge_stream: JS,
-        id: Arc<str>,
+        cert_name: CertName,
+        token: Token,
     ) -> Result<Self> {
-        let (token, cert_name) = loop {
-            match master_stream
-                .recv()
-                .await
-                .context("recv token message")?
-                .context("recv token message")
-            {
-                Ok(MasterIncome::Token { token, name }) => break (token, name),
-                Ok(_) => log::warn!("invoker {id} sended message, but not sended token"),
-                Err(e) => {
-                    log::error!("can't read message: {e:?}");
-                }
-            }
-        };
         Ok(UnverifiedInvoker {
             invoker: Invoker {
                 judge_stream,
                 token,
             },
             auth_stream,
-            cert_name: Arc::from(cert_name),
+            cert_name,
         })
     }
 
     pub async fn verify(self, cert: Cert) -> Result<Invoker<JS>> {
+        let log_state = LogState::new().push(
+            "token",
+            format!("{:?}:{:?}", self.cert_name, self.invoker.token),
+        );
         let challenge = Challenge::generate(CHALLENGE_SIZE, &mut rand::rng());
         self.auth_stream
             .send(AuthOutgo::Challenge(challenge.clone()))
             .await?;
 
-        let AuthIncome::ChallengeSolution(solution) = loop {
+        let solution = loop {
             match self
                 .auth_stream
                 .recv()
@@ -248,8 +243,8 @@ impl<AS: Stream<AuthIncome, AuthOutgo>, JS: Stream<JudgeIncome, JudgeOutgo>>
                 .context("reading auth stream")?
                 .context("reading auth stream")
             {
-                Ok(msg) => break msg,
-                Err(e) => log::error!("{e:?}"),
+                Ok(AuthIncome::AuthProof(solution)) => break solution,
+                Err(e) => log::error!("({log_state}) {e:?}"),
             };
         };
 
@@ -270,9 +265,5 @@ impl<AS: Stream<AuthIncome, AuthOutgo>, JS: Stream<JudgeIncome, JudgeOutgo>>
                 Err(e)
             }
         }
-    }
-
-    pub fn token(&self) -> Uuid {
-        self.invoker.token
     }
 }

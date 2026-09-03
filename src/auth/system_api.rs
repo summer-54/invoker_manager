@@ -1,6 +1,6 @@
 use http::HeaderValue;
 use reqwest::Url;
-use toaster_lib_rs::auth::{Cert, Parse};
+use toaster_lib_rs::auth::{Cert, CertName, Parse};
 
 use crate::prelude::*;
 
@@ -11,11 +11,8 @@ pub struct Service {
 }
 
 impl super::Service for Service {
-    async fn certificate(
-        self: std::sync::Arc<Self>,
-        cert_name: std::sync::Arc<str>,
-    ) -> Result<Cert> {
-        log::trace!("Trying to get authorise key '{cert_name}' from api");
+    async fn certificate(self: std::sync::Arc<Self>, cert_name: CertName) -> Result<Cert> {
+        log::trace!("Trying to get authorise key '{}' from api", &*cert_name);
         let mut request =
             reqwest::Request::new(reqwest::Method::GET, self.api_url.join(END_POINT)?);
         let _ = request.headers_mut().insert(
