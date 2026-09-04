@@ -99,11 +99,13 @@ impl<JS: Stream<JudgeIncome, JudgeOutgo>> Service<JS> {
             .lock()
             .await
             .insert(token.clone(), Arc::new(invoker));
+        log::info!("added new invoker: {token:?}");
         self.poll.put(token);
         Ok(())
     }
 
     pub async fn delete_invoker(&self, token: &Token) {
+        log::info!("delete invoker '{token:?}'");
         self.invokers.lock().await.remove(token);
     }
 

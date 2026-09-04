@@ -56,11 +56,14 @@ impl<JS: Stream<invoker::JudgeIncome, invoker::JudgeOutgo>, AService: auth::Serv
             .await?;
         self.invokers_service.verify_invoker(invoker, cert).await?;
 
-        match master_stream
-            .recv()
-            .await
-            .context(format!("recv master stream invoker {token:?} message"))?
-            .context(format!("recv master stream invoker {token:?} message"))
+        match async {
+            master_stream
+                .recv()
+                .await
+                .context(format!("recv master stream invoker {token:?} message"))?
+                .context(format!("recv master stream invoker {token:?} message"))
+        }
+        .await
         {
             Ok(
                 toaster_lib_rs::server::stream::invoker_manager::master::InvokerToManager::Exited {
@@ -70,12 +73,11 @@ impl<JS: Stream<invoker::JudgeIncome, invoker::JudgeOutgo>, AService: auth::Serv
             ) => {
                 log::trace!("invoker {token:?} exited: with code: {code}");
             }
+
             Err(e) => {
                 log::error!("{e:?}");
             }
         }
-
-        log::info!("delete invoker '{token:?}'");
 
         self.clone().invokers_service.delete_invoker(&token).await;
 
@@ -115,9 +117,15 @@ impl<
                 let this = this.clone();
                 tokio::spawn(async move {
                     let _ = this
-                        .handle_invoker(auth_stream, master_stream, judge_stream, cert_name, token)
+                        .handle_invoker(
+                            auth_stream,
+                            master_stream,
+                            judge_stream,
+                            cert_name,
+                            token.clone(),
+                        )
                         .await
-                        .context("handling invoker {id}")
+                        .context(format!("handling invoker {token:?}"))
                         .map_err(|err| {
                             log::error!("{err:?}");
                         });

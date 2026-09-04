@@ -1,5 +1,6 @@
 #[cfg(feature = "mock")]
 pub mod mock;
+#[cfg(not(feature = "mock"))]
 pub mod system_api;
 use toaster_lib_rs::auth::{Cert, CertName};
 

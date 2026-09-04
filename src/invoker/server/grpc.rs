@@ -1,7 +1,7 @@
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 
 use tokio_stream::wrappers::UnboundedReceiverStream;
-use tonic::{Response, Status, codec::CompressionEncoding, metadata::MetadataMap};
+use tonic::{Response, Status, Streaming, codec::CompressionEncoding, metadata::MetadataMap};
 
 use crate::{application::InvokersStreamsReceiver, invoker::InvokerComponents, prelude::*};
 
@@ -46,7 +46,7 @@ impl InvokerBuilder {
 
 pub struct Server {
     map: Mutex<HashMap<Token, InvokerBuilder>>,
-    pub sender: UnboundedSender<InvokerComponents<AS, MS, JS>>,
+    sender: UnboundedSender<InvokerComponents<AS, MS, JS>>,
 }
 
 type ServiceStream<T> = UnboundedReceiverStream<Result<T, Status>>;
@@ -54,7 +54,7 @@ type ServiceStream<T> = UnboundedReceiverStream<Result<T, Status>>;
 impl Server {
     pub async fn check(&self, token: &Token) -> Result<()> {
         let mut map = self.map.lock().await;
-        if !matches!(map.get(token), Some(ib) if ib.is_ready()) {
+        if !matches!(map.get(token), Some(invoker_builder) if invoker_builder.is_ready()) {
             return Ok(());
         }
 
@@ -82,17 +82,32 @@ impl Server {
     }
 }
 
-fn get_header_from_metadata<'a>(
-    metadata: &'a MetadataMap,
-    name: &str,
-) -> Result<&'a str, tonic::Status> {
+fn get_header_from_metadata<'a>(metadata: &'a MetadataMap, name: &str) -> Result<&'a str> {
     metadata
         .get(name)
-        .context("parsing TOKEN metadata")
-        .map_err(|err| tonic::Status::invalid_argument(format!("{err:?}")))?
+        .context("parsing TOKEN metadata")?
         .to_str()
         .context("converting TOKEN to string")
-        .map_err(|err| tonic::Status::invalid_argument(format!("{err:?}")))
+}
+
+async fn map_stream_request<
+    I,
+    O,
+    H: AsyncFnOnce(MetadataMap, ServerStream<I, O, Streaming<I>>) -> Result<()>,
+>(
+    request: tonic::Request<tonic::Streaming<I>>,
+    handler: H,
+) -> Result<Response<ServiceStream<O>>, tonic::Status> {
+    let (sender_outgo, receiver_outgo) =
+        tokio::sync::mpsc::unbounded_channel::<Result<O, Status>>();
+    let (metadata, _, receiver) = request.into_parts();
+    let stream: ServerStream<I, O, _> = grpc::ServerStream::new(receiver, sender_outgo);
+
+    handler(metadata, stream)
+        .await
+        .map_err(|err| Status::internal(format!("{err:?}")))?;
+
+    Ok(Response::new(ServiceStream::new(receiver_outgo)))
 }
 
 #[tonic::async_trait]
@@ -103,33 +118,26 @@ impl grpc::invoker_manager::Service for Server {
         &self,
         request: tonic::Request<tonic::Streaming<pb::MasterIncome>>,
     ) -> Result<tonic::Response<Self::MasterStreamStream>, tonic::Status> {
-        let (sender_outgo, receiver_outgo) =
-            tokio::sync::mpsc::unbounded_channel::<Result<pb::MasterOutgo, Status>>();
-        let metadata = request.metadata();
-        let token: Token =
-            get_header_from_metadata(metadata, grpc::invoker_manager::metadata::TOKEN)?.into();
-        let cert_name: CertName =
-            get_header_from_metadata(metadata, grpc::invoker_manager::metadata::CERT_NAME)?.into();
+        map_stream_request(request, async |metadata, stream| {
+            let token: Token =
+                get_header_from_metadata(&metadata, grpc::invoker_manager::metadata::TOKEN)?.into();
+            let cert_name: CertName =
+                get_header_from_metadata(&metadata, grpc::invoker_manager::metadata::CERT_NAME)?
+                    .into();
 
-        let receiver = request.into_inner();
+            {
+                self.map
+                    .lock()
+                    .await
+                    .entry(token.clone())
+                    .or_insert(InvokerBuilder::new(cert_name))
+                    .master_stream = Some(stream);
+            };
 
-        let stream: ServerStream<pb::MasterIncome, pb::MasterOutgo, _> =
-            grpc::ServerStream::new(receiver, sender_outgo);
-
-        {
-            self.map
-                .lock()
-                .await
-                .entry(token.clone())
-                .or_insert(InvokerBuilder::new(cert_name))
-                .master_stream = Some(stream);
-        }
-
-        self.check(&token)
-            .await
-            .map_err(|err| tonic::Status::internal(format!("{err:?}")))?;
-
-        Ok(Response::new(ServiceStream::new(receiver_outgo)))
+            self.check(&token).await?;
+            Ok(())
+        })
+        .await
     }
 
     type JudgeStreamStream = ServiceStream<pb::JudgeOutgo>;
@@ -138,34 +146,25 @@ impl grpc::invoker_manager::Service for Server {
         &self,
         request: tonic::Request<tonic::Streaming<pb::JudgeIncome>>,
     ) -> Result<tonic::Response<Self::JudgeStreamStream>, tonic::Status> {
-        let (sender_outgo, receiver_outgo) =
-            tokio::sync::mpsc::unbounded_channel::<Result<pb::JudgeOutgo, Status>>();
+        map_stream_request(request, async |metadata, stream| {
+            let token: Token =
+                get_header_from_metadata(&metadata, grpc::invoker_manager::metadata::TOKEN)?.into();
+            let cert_name: CertName =
+                get_header_from_metadata(&metadata, grpc::invoker_manager::metadata::CERT_NAME)?
+                    .into();
+            {
+                self.map
+                    .lock()
+                    .await
+                    .entry(token.clone())
+                    .or_insert(InvokerBuilder::new(cert_name))
+                    .judge_stream = Some(stream);
+            }
 
-        let metadata = request.metadata();
-        let token: Token =
-            get_header_from_metadata(metadata, grpc::invoker_manager::metadata::TOKEN)?.into();
-        let cert_name: CertName =
-            get_header_from_metadata(metadata, grpc::invoker_manager::metadata::CERT_NAME)?.into();
-
-        let receiver = request.into_inner();
-
-        let stream: ServerStream<pb::JudgeIncome, pb::JudgeOutgo, _> =
-            grpc::ServerStream::new(receiver, sender_outgo);
-
-        {
-            self.map
-                .lock()
-                .await
-                .entry(token.clone())
-                .or_insert(InvokerBuilder::new(cert_name))
-                .judge_stream = Some(stream);
-        }
-
-        self.check(&token)
-            .await
-            .map_err(|err| tonic::Status::internal(format!("{err:?}")))?;
-
-        Ok(Response::new(ServiceStream::new(receiver_outgo)))
+            self.check(&token).await?;
+            Ok(())
+        })
+        .await
     }
 
     type AuthStream = ServiceStream<pb::AuthOutgo>;
@@ -174,33 +173,27 @@ impl grpc::invoker_manager::Service for Server {
         &self,
         request: tonic::Request<tonic::Streaming<pb::AuthIncome>>,
     ) -> Result<tonic::Response<Self::AuthStream>, tonic::Status> {
-        let (sender_outgo, receiver_outgo) =
-            tokio::sync::mpsc::unbounded_channel::<Result<pb::AuthOutgo, Status>>();
-        let metadata = request.metadata();
-        let token: Token =
-            get_header_from_metadata(metadata, grpc::invoker_manager::metadata::TOKEN)?.into();
-        let cert_name: CertName =
-            get_header_from_metadata(metadata, grpc::invoker_manager::metadata::CERT_NAME)?.into();
+        map_stream_request(request, async |metadata, stream| {
+            let token: Token =
+                get_header_from_metadata(&metadata, grpc::invoker_manager::metadata::TOKEN)?.into();
+            let cert_name: CertName =
+                get_header_from_metadata(&metadata, grpc::invoker_manager::metadata::CERT_NAME)?
+                    .into();
+            {
+                self.map
+                    .lock()
+                    .await
+                    .entry(token.clone())
+                    .or_insert(InvokerBuilder::new(cert_name))
+                    .auth_stream = Some(stream);
+            }
 
-        let receiver = request.into_inner();
-
-        let stream: ServerStream<pb::AuthIncome, pb::AuthOutgo, _> =
-            grpc::ServerStream::new(receiver, sender_outgo);
-
-        {
-            self.map
-                .lock()
+            self.check(&token)
                 .await
-                .entry(token.clone())
-                .or_insert(InvokerBuilder::new(cert_name))
-                .auth_stream = Some(stream);
-        }
-
-        self.check(&token)
-            .await
-            .map_err(|err| tonic::Status::internal(format!("{err:?}")))?;
-
-        Ok(Response::new(ServiceStream::new(receiver_outgo)))
+                .map_err(|err| tonic::Status::internal(format!("{err:?}")))?;
+            Ok(())
+        })
+        .await
     }
 }
 

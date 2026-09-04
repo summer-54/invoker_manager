@@ -2337,9 +2337,9 @@ dependencies = [
 
 [[package]]
 name = "tinyvec"
-version = "1.13.0"
+version = "1.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ba2077be5cd93c7408c849e45a4ab261b59f923f4bcdee2a724b8ed5a175a77"
+checksum = "4cf0ded5c4e56918d8f8a339e1bb67d038d3bc6d144ac407904015ba2e4cde9b"
 dependencies = [
  "tinyvec_macros",
 ]
@@ -2353,7 +2353,7 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 [[package]]
 name = "toaster_lib_rs"
 version = "0.1.0"
-source = "git+https://github.com/summer-54/toaster_lib_rs.git#14c037482dd8519ea8e3dae4456c060fa808dbec"
+source = "git+https://github.com/summer-54/toaster_lib_rs.git#89c030f4a367c4f7e986ae68f4af5602c945e6b5"
 dependencies = [
  "anyhow",
  "bytes",

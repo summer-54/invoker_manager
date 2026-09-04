@@ -12,7 +12,9 @@ use std::net::SocketAddrV4;
 use crate::application::App;
 
 const INVOKER_GATE_SOCKET_ADDRESS_ENV: &str = "INVOKER_GATE_SOCKET_ADDRESS";
+#[cfg(not(feature = "mock"))]
 const SYSTEM_SOCKET_ADDRESS_ENV: &str = "SYSTEM_SOCKET_ADDRESS";
+#[cfg(not(feature = "mock"))]
 const AUTH_API_URL_ENV: &str = "AUTH_API_URL";
 
 #[tokio::main]
@@ -23,10 +25,12 @@ async fn main() -> Result<()> {
         .context(format!("{INVOKER_GATE_SOCKET_ADDRESS_ENV} env reading"))?
         .parse()
         .context(format!("{INVOKER_GATE_SOCKET_ADDRESS_ENV} parsing"))?;
+    #[cfg(not(feature = "mock"))]
     let system_socket_address: SocketAddrV4 = env::var(SYSTEM_SOCKET_ADDRESS_ENV)
         .context(format!("{SYSTEM_SOCKET_ADDRESS_ENV} env reading"))?
         .parse()
         .context(format!("{SYSTEM_SOCKET_ADDRESS_ENV} parsing"))?;
+    #[cfg(not(feature = "mock"))]
     let auth_api_url: reqwest::Url = env::var(AUTH_API_URL_ENV)
         .context(format!("{AUTH_API_URL_ENV} env reading"))?
         .parse()
@@ -68,7 +72,7 @@ async fn main() -> Result<()> {
             log::trace!("sending msg into system master stream: {msg:?}");
         };
 
-        let system_master_stream = toaster_lib_rs::server::mock::Mock::new(sms_logger);
+        let system_master_stream = toaster_lib_rs::server::stream::mock::Mock::new(sms_logger);
         (system_master_stream, auth::mock::Service {})
     };
     let app = Arc::new(App {
