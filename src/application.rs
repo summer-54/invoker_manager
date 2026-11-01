@@ -14,9 +14,24 @@ use toaster_lib_rs::{
 };
 
 pub trait InvokersStreamsReceiver {
-    type AS: Stream<invoker::AuthIncome, invoker::AuthOutgo>;
-    type MS: Stream<invoker::MasterIncome, invoker::MasterOutgo>;
-    type JS: Stream<invoker::JudgeIncome, invoker::JudgeOutgo>;
+    type AS: Stream<
+            invoker::AuthIncome,
+            invoker::AuthOutgo,
+            AliveError: Send + Sync + 'static,
+            BrokenError: Send + Sync + 'static,
+        >;
+    type MS: Stream<
+            invoker::MasterIncome,
+            invoker::MasterOutgo,
+            AliveError: Send + Sync + 'static,
+            BrokenError: Send + Sync + 'static,
+        >;
+    type JS: Stream<
+            invoker::JudgeIncome,
+            invoker::JudgeOutgo,
+            AliveError: Send + Sync + 'static,
+            BrokenError: Send + Sync + 'static,
+        >;
     #[allow(clippy::type_complexity)]
     fn next(
         &self,
@@ -33,8 +48,21 @@ impl<JS: Stream<invoker::JudgeIncome, invoker::JudgeOutgo>, AService: auth::Serv
     App<JS, AService>
 {
     async fn handle_invoker<
-        AS: Stream<invoker::AuthIncome, invoker::AuthOutgo> + Send + 'static,
-        MS: Stream<invoker::MasterIncome, invoker::MasterOutgo> + Send + Sync + 'static,
+        AS: Stream<
+                invoker::AuthIncome,
+                invoker::AuthOutgo,
+                AliveError: Send + Sync + 'static,
+                BrokenError: Send + Sync + 'static,
+            > + Send
+            + 'static,
+        MS: Stream<
+                invoker::MasterIncome,
+                invoker::MasterOutgo,
+                AliveError: Send + Sync + 'static,
+                BrokenError: Send + Sync + 'static,
+            > + Send
+            + Sync
+            + 'static,
     >(
         self: Arc<Self>,
         auth_stream: AS,
@@ -56,15 +84,7 @@ impl<JS: Stream<invoker::JudgeIncome, invoker::JudgeOutgo>, AService: auth::Serv
             .await?;
         self.invokers_service.verify_invoker(invoker, cert).await?;
 
-        match async {
-            master_stream
-                .recv()
-                .await
-                .context(format!("recv master stream invoker {token:?} message"))?
-                .context(format!("recv master stream invoker {token:?} message"))
-        }
-        .await
-        {
+        match master_stream.recv().await {
             Ok(
                 toaster_lib_rs::server::stream::invoker_manager::master::InvokerToManager::Exited {
                     code,
@@ -75,7 +95,7 @@ impl<JS: Stream<invoker::JudgeIncome, invoker::JudgeOutgo>, AService: auth::Serv
             }
 
             Err(e) => {
-                log::error!("{e:?}");
+                log::error!("recv master stream invoker {token:?} message: {e:?}");
             }
         }
 
@@ -85,13 +105,25 @@ impl<JS: Stream<invoker::JudgeIncome, invoker::JudgeOutgo>, AService: auth::Serv
     }
 }
 impl<
-    JS: Stream<invoker::JudgeIncome, invoker::JudgeOutgo> + Send + Sync + 'static,
+    JS: Stream<
+            invoker::JudgeIncome,
+            invoker::JudgeOutgo,
+            AliveError: Send + Sync + 'static,
+            BrokenError: Send + Sync + 'static,
+        > + Send
+        + Sync
+        + 'static,
     AService: auth::Service,
 > App<JS, AService>
 {
     pub async fn run<
         ISR: InvokersStreamsReceiver<JS = JS> + Send + 'static,
-        SMS: Stream<testing_system::SystemToManager, testing_system::ManagerToSystem>
+        SMS: Stream<
+                testing_system::SystemToManager,
+                testing_system::ManagerToSystem,
+                AliveError: Send + Sync + 'static,
+                BrokenError: Send + Sync + 'static,
+            >
             + Send
             + 'static
             + Sync,
@@ -140,7 +172,6 @@ impl<
                     .recv()
                     .await
                     .context("recv master system message".to_string())?
-                    .context("recv master system message")?
                 {
                     testing_system::SystemToManager::Judge {
                         submission_id,

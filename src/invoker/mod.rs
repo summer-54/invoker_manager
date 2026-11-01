@@ -20,7 +20,7 @@ use toaster_lib_rs::{
     },
     logger::LogState,
     poll::ResourcePool,
-    server::stream::Stream,
+    server::stream::{Error as StreamError, Stream},
 };
 
 pub struct InvokerComponents<AS, MS, JS>
@@ -76,7 +76,14 @@ impl<JS: Stream<JudgeIncome, JudgeOutgo>> Default for Service<JS> {
 }
 
 impl<JS: Stream<JudgeIncome, JudgeOutgo>> Service<JS> {
-    pub async fn create_invoker<AS: Stream<AuthIncome, AuthOutgo>>(
+    pub async fn create_invoker<
+        AS: Stream<
+                AuthIncome,
+                AuthOutgo,
+                AliveError: Send + Sync + 'static,
+                BrokenError: Send + Sync + 'static,
+            >,
+    >(
         &self,
         auth_stream: AS,
         judge_stream: JS,
@@ -88,11 +95,19 @@ impl<JS: Stream<JudgeIncome, JudgeOutgo>> Service<JS> {
             .context(format!("creating invoker {cert_name:?}:{token:?}"))
     }
 
-    pub async fn verify_invoker(
+    pub async fn verify_invoker<AS>(
         &self,
-        invoker: UnverifiedInvoker<impl Stream<AuthIncome, AuthOutgo>, JS>,
+        invoker: UnverifiedInvoker<AS, JS>,
         cert: Cert,
-    ) -> Result<()> {
+    ) -> Result<()>
+    where
+        AS: Stream<
+                AuthIncome,
+                AuthOutgo,
+                AliveError: Send + Sync + 'static,
+                BrokenError: Send + Sync + 'static,
+            >,
+    {
         let invoker = invoker.verify(cert).await?;
         let token = invoker.token.clone();
         self.invokers
@@ -114,7 +129,17 @@ impl<JS: Stream<JudgeIncome, JudgeOutgo>> Service<JS> {
     }
 }
 
-impl<JS: Stream<JudgeIncome, JudgeOutgo> + Send + Sync + 'static> Service<JS> {
+impl<JS> Service<JS>
+where
+    JS: Stream<
+            JudgeIncome,
+            JudgeOutgo,
+            AliveError: Send + Sync + 'static,
+            BrokenError: Send + Sync + 'static,
+        > + Send
+        + Sync
+        + 'static,
+{
     async fn take_invoker(self: &Arc<Self>) -> InvokerGuard<JS> {
         let token = loop {
             let token = self.poll.take().await;
@@ -149,7 +174,15 @@ pub struct Invoker<JS: Stream<JudgeIncome, JudgeOutgo>> {
     pub token: Token,
 }
 
-impl<JS: Stream<JudgeIncome, JudgeOutgo>> Invoker<JS> {
+impl<JS> Invoker<JS>
+where
+    JS: Stream<
+            JudgeIncome,
+            JudgeOutgo,
+            AliveError: Send + Sync + 'static,
+            BrokenError: Send + Sync + 'static,
+        >,
+{
     pub async fn judge_submission(
         &self,
         test_count: usize,
@@ -168,19 +201,18 @@ impl<JS: Stream<JudgeIncome, JudgeOutgo>> Invoker<JS> {
         let mut results = vec![None; test_count].into_boxed_slice();
 
         let submission_result = loop {
-            match match self
-                .judge_stream
-                .recv()
-                .await
-                .context("recv judge stream")?
-                .context("recv judge stream")
-            {
+            let msg = match self.judge_stream.recv().await {
                 Ok(msg) => msg,
-                Err(e) => {
+                Err(StreamError::Alive(e)) => {
                     log::error!("({log_state}) {e:?}");
                     continue;
                 }
-            } {
+                Err(StreamError::Broken(e)) => {
+                    return Err(e).context("recv judge stream");
+                }
+            };
+
+            match msg {
                 JudgeIncome::SubmissionResult(result) => {
                     break result;
                 }
@@ -221,8 +253,15 @@ pub struct UnverifiedInvoker<AS: Stream<AuthIncome, AuthOutgo>, JS: Stream<Judge
     pub auth_stream: AS,
 }
 
-impl<AS: Stream<AuthIncome, AuthOutgo>, JS: Stream<JudgeIncome, JudgeOutgo>>
-    UnverifiedInvoker<AS, JS>
+impl<AS, JS> UnverifiedInvoker<AS, JS>
+where
+    AS: Stream<
+            AuthIncome,
+            AuthOutgo,
+            AliveError: Send + Sync + 'static,
+            BrokenError: Send + Sync + 'static,
+        >,
+    JS: Stream<JudgeIncome, JudgeOutgo>,
 {
     pub async fn new(
         auth_stream: AS,
@@ -251,16 +290,13 @@ impl<AS: Stream<AuthIncome, AuthOutgo>, JS: Stream<JudgeIncome, JudgeOutgo>>
             .await?;
 
         let solution = loop {
-            match self
-                .auth_stream
-                .recv()
-                .await
-                .context("reading auth stream")?
-                .context("reading auth stream")
-            {
+            match self.auth_stream.recv().await {
                 Ok(AuthIncome::AuthProof(solution)) => break solution,
-                Err(e) => log::error!("({log_state}) {e:?}"),
-            };
+                Err(StreamError::Alive(e)) => log::error!("({log_state}) {e:?}"),
+                Err(StreamError::Broken(e)) => {
+                    return Err(e).context("reading auth stream");
+                }
+            }
         };
 
         match solution.verify(&challenge, &cert, &policy::StandardPolicy::new()) {
@@ -277,7 +313,7 @@ impl<AS: Stream<AuthIncome, AuthOutgo>, JS: Stream<JudgeIncome, JudgeOutgo>>
                     .send(AuthOutgo::Verdict(false))
                     .await
                     .context("sedning false verdict")?;
-                Err(e)
+                Err(e.into())
             }
         }
     }
