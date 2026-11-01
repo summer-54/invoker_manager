@@ -13,6 +13,7 @@ ENV RUST_BACKTRACE=1
 
 RUN ["apt-get", "update"]
 RUN ["apt-get", "install", "clang", "--no-install-recommends", "-y"]
+RUN ["apt-get", "install", "protobuf-compiler", "--no-install-recommends", "-y"]
 
 RUN ["cargo", "build", "--release"]
 
