@@ -46,7 +46,7 @@ async fn main() -> Result<()> {
         use tonic::{codec::CompressionEncoding, transport::Channel};
 
         let channel = Channel::builder(
-            format!("ws://{}/api/setup", system_socket_address)
+            format!("http://{}", system_socket_address)
                 .parse()
                 .context("parsing manager host field")?,
         )
